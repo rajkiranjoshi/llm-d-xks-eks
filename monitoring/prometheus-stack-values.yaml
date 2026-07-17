@@ -1,0 +1,70 @@
+# Values for the llmd kube-prometheus-stack release in llm-d-monitoring.
+# Applies EFA hw_counters via AWS's patched node-exporter image
+# (public.ecr.aws/hpc-cloud/efa-node-exporter), exposing node_amazonefa_* metrics.
+#
+# helm upgrade llmd prometheus-community/kube-prometheus-stack \
+#   -n llm-d-monitoring -f monitoring/prometheus-stack-values.yaml
+
+grafana:
+  adminPassword: admin
+  datasources:
+    datasources.yaml:
+      apiVersion: 1
+      datasources:
+        - access: proxy
+          isDefault: true
+          jsonData:
+            tlsSkipVerify: true
+          name: Prometheus
+          type: prometheus
+          url: https://llmd-kube-prometheus-stack-prometheus.llm-d-monitoring.svc.cluster.local:9090
+  service:
+    sessionAffinity: ""
+    type: ClusterIP
+  sidecar:
+    dashboards:
+      enabled: true
+      searchNamespace: ALL
+    datasources:
+      defaultDatasourceEnabled: false
+
+prometheus:
+  prometheusSpec:
+    maximumStartupDurationSeconds: 300
+    podMonitorNamespaceSelector: {}
+    podMonitorSelector: {}
+    podMonitorSelectorNilUsesHelmValues: false
+    resources:
+      limits:
+        cpu: 4000m
+        memory: 8Gi
+      requests:
+        cpu: 1000m
+        memory: 4Gi
+    serviceMonitorNamespaceSelector: {}
+    serviceMonitorSelector: {}
+    serviceMonitorSelectorNilUsesHelmValues: false
+    web:
+      tlsConfig:
+        cert:
+          secret:
+            key: tls.crt
+            name: prometheus-web-tls
+        keySecret:
+          key: tls.key
+          name: prometheus-web-tls
+  service:
+    sessionAffinity: ""
+    type: ClusterIP
+
+# Stock node-exporter lacks EFA hw_counters. AWS's fork adds the amazonefa
+# collector (reads /sys/class/infiniband/*/ports/*/hw_counters).
+prometheus-node-exporter:
+  # version is required when image.tag is not semver (chart uses it in templates)
+  version: 1.10.2
+  image:
+    registry: public.ecr.aws
+    repository: hpc-cloud/efa-node-exporter
+    tag: latest
+    # Chart defaults append "-distroless"; EFA public image has no such tag
+    distroless: false

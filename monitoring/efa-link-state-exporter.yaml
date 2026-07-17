@@ -1,0 +1,249 @@
+# Exports EFA/IB port logical state + physical LinkUp from sysfs.
+# The AWS EFA node-exporter reads these files but does not emit them as metrics
+# (state_id / physical_state_id are commented out). Stock infiniband collector
+# also fails on EFA devices (no standard counters/ dir).
+#
+# Metrics (scraped via ServiceMonitor into llm-d-monitoring Prometheus):
+#   node_efa_port_state{device,port,state}           — 4 = ACTIVE
+#   node_efa_port_phys_state{device,port,phys_state} — 5 = LinkUp
+#
+# kubectl apply -f monitoring/efa-link-state-exporter.yaml
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: efa-link-state-exporter
+  namespace: llm-d-monitoring
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: efa-link-state-exporter
+  namespace: llm-d-monitoring
+data:
+  exporter.py: |
+    #!/usr/bin/env python3
+    """Scrape EFA/IB port state from sysfs and expose Prometheus metrics."""
+    from __future__ import annotations
+
+    import os
+    import threading
+    import time
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from pathlib import Path
+
+    SYSFS = Path(os.environ.get("SYSFS", "/host/sys/class/infiniband"))
+    PORT = int(os.environ.get("PORT", "9101"))
+    INTERVAL = float(os.environ.get("INTERVAL", "15"))
+
+    _metrics = ""
+    _lock = threading.Lock()
+
+
+    def collect() -> str:
+        lines = [
+            "# HELP node_efa_port_state InfiniBand/EFA logical port state ID from sysfs (4=ACTIVE).",
+            "# TYPE node_efa_port_state gauge",
+            "# HELP node_efa_port_phys_state InfiniBand/EFA physical port state ID from sysfs (5=LinkUp).",
+            "# TYPE node_efa_port_phys_state gauge",
+        ]
+        if not SYSFS.is_dir():
+            return "\n".join(lines) + "\n"
+
+        for device_dir in sorted(SYSFS.iterdir()):
+            # sysfs class entries are symlinks; Path follows them for is_dir/read
+            if not device_dir.is_dir():
+                continue
+            device = device_dir.name
+            ports_dir = device_dir / "ports"
+            if not ports_dir.is_dir():
+                continue
+            for port_dir in sorted(ports_dir.iterdir()):
+                state_f = port_dir / "state"
+                phys_f = port_dir / "phys_state"
+                if not state_f.is_file() or not phys_f.is_file():
+                    continue
+                try:
+                    sline = state_f.read_text().strip()
+                    pline = phys_f.read_text().strip()
+                except OSError:
+                    continue
+                # "4: ACTIVE" / "5: LinkUp"
+                try:
+                    sid_s, sname = [x.strip() for x in sline.split(":", 1)]
+                    pid_s, pname = [x.strip() for x in pline.split(":", 1)]
+                    sid = int(sid_s)
+                    pid = int(pid_s)
+                except ValueError:
+                    continue
+                sname = sname.replace(" ", "_")
+                pname = pname.replace(" ", "_")
+                port = port_dir.name
+                lines.append(
+                    f'node_efa_port_state{{device="{device}",port="{port}",state="{sname}"}} {sid}'
+                )
+                lines.append(
+                    f'node_efa_port_phys_state{{device="{device}",port="{port}",phys_state="{pname}"}} {pid}'
+                )
+        return "\n".join(lines) + "\n"
+
+
+    def collector_loop() -> None:
+        global _metrics
+        while True:
+            text = collect()
+            with _lock:
+                _metrics = text
+            time.sleep(INTERVAL)
+
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            if self.path.split("?", 1)[0] not in ("/metrics", "/metrics/"):
+                self.send_response(404)
+                self.end_headers()
+                return
+            with _lock:
+                body = _metrics.encode()
+            self.send_response(200)
+            self.send_header(
+                "Content-Type", "text/plain; version=0.0.4; charset=utf-8"
+            )
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, fmt: str, *args) -> None:
+            return
+
+
+    def main() -> None:
+        # Initial collect (retry briefly for hostPath race)
+        global _metrics
+        for _ in range(30):
+            text = collect()
+            with _lock:
+                _metrics = text
+            if "node_efa_port_phys_state{" in text:
+                break
+            time.sleep(1)
+
+        threading.Thread(target=collector_loop, daemon=True).start()
+        server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
+        server.serve_forever()
+
+
+    if __name__ == "__main__":
+        main()
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: efa-link-state-exporter
+  namespace: llm-d-monitoring
+  labels:
+    app.kubernetes.io/name: efa-link-state-exporter
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: efa-link-state-exporter
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: efa-link-state-exporter
+    spec:
+      serviceAccountName: efa-link-state-exporter
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      tolerations:
+        - operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: exporter
+          image: python:3.12-alpine
+          imagePullPolicy: IfNotPresent
+          command: ["python3", "/scripts/exporter.py"]
+          ports:
+            - name: metrics
+              containerPort: 9101
+              hostPort: 9101
+          env:
+            - name: SYSFS
+              value: /host/sys/class/infiniband
+            - name: PORT
+              value: "9101"
+            - name: INTERVAL
+              value: "15"
+          volumeMounts:
+            - name: sys
+              mountPath: /host/sys
+              readOnly: true
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+          resources:
+            requests:
+              cpu: 20m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: sys
+          hostPath:
+            path: /sys
+        - name: scripts
+          configMap:
+            name: efa-link-state-exporter
+            defaultMode: 0755
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: efa-link-state-exporter
+  namespace: llm-d-monitoring
+  labels:
+    app.kubernetes.io/name: efa-link-state-exporter
+spec:
+  clusterIP: None
+  ports:
+    - name: metrics
+      port: 9101
+      targetPort: metrics
+  selector:
+    app.kubernetes.io/name: efa-link-state-exporter
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: efa-link-state-exporter
+  namespace: llm-d-monitoring
+  labels:
+    app.kubernetes.io/name: efa-link-state-exporter
+    release: llmd
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: efa-link-state-exporter
+  namespaceSelector:
+    matchNames:
+      - llm-d-monitoring
+  endpoints:
+    - port: metrics
+      interval: 15s
+      path: /metrics
+      relabelings:
+        - sourceLabels: [__meta_kubernetes_pod_node_name]
+          targetLabel: node
+        - sourceLabels: [__meta_kubernetes_pod_host_ip]
+          targetLabel: host_ip
+        # Align instance with node-exporter (host_ip:9100) so $node filters match
+        - sourceLabels: [__meta_kubernetes_pod_host_ip]
+          targetLabel: instance
+          replacement: "${1}:9100"
