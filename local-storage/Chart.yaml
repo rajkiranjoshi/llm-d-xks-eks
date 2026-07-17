@@ -1,0 +1,4 @@
+apiVersion: v2
+name: local-nvme-storage
+description: RAID-0 NVMe local storage for GPU nodes
+version: 0.1.0

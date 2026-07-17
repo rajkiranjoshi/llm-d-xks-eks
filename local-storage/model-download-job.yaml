@@ -1,0 +1,86 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: model-download
+spec:
+  completions: 2
+  parallelism: 2
+  template:
+    metadata:
+      labels:
+        job-name: model-download
+    spec:
+      nodeSelector:
+        role: gpu
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  job-name: model-download
+              topologyKey: kubernetes.io/hostname
+      containers:
+        - name: download
+          image: python:3.11-slim
+          command:
+            - bash
+            - -c
+            - |
+              pip install -q huggingface_hub
+              FAILED=""
+              for MODEL in \
+                "deepseek-ai/DeepSeek-V3-0324" \
+                "deepseek-ai/DeepSeek-V4-Flash" \
+                "google/gemma-4-31B-it" \
+                "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8" \
+                "openai/gpt-oss-120b" \
+                "openai/gpt-oss-20b" \
+                "Qwen/Qwen2.5-3B-Instruct" \
+                "Qwen/Qwen3-235B-A22B-Instruct-2507-FP8" \
+                "Qwen/Qwen3-30B-A3B-Instruct-2507-FP8" \
+                "Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8" \
+                "RedHatAI/Llama-3.2-3B-Instruct-FP8" \
+                "RedHatAI/Llama-3.2-3B-Instruct-FP8-dynamic" \
+                "RedHatAI/Llama-3.3-70B-Instruct-FP8-dynamic" \
+                "zai-org/GLM-4.7-FP8" \
+                "zai-org/GLM-Z1-32B-0414" \
+              ; do
+                echo "Downloading $MODEL..."
+                if hf download "$MODEL"; then
+                  echo "Done: $MODEL"
+                else
+                  echo "FAILED: $MODEL"
+                  FAILED="$FAILED $MODEL"
+                fi
+              done
+              if [ -n "$FAILED" ]; then
+                echo "Failed models:$FAILED"
+                exit 1
+              fi
+              echo "Fixing permissions on model cache for non-root containers..."
+              chmod -R a+rX /model-cache
+              find /model-cache -type d -exec chmod a+rwx {} +
+          env:
+            - name: HF_HOME
+              value: /model-cache
+            - name: HF_HUB_DOWNLOAD_TIMEOUT
+              value: "60"
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-secret
+                  key: HF_TOKEN
+          volumeMounts:
+            - name: hf-cache
+              mountPath: /model-cache
+      volumes:
+        - name: hf-cache
+          hostPath:
+            path: /mnt/nvme/models
+            type: DirectoryOrCreate
+      restartPolicy: Never
+  backoffLimit: 3

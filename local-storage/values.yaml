@@ -1,0 +1,7 @@
+mountPath: /mnt/nvme
+nodeSelector:
+  role: gpu
+tolerations:
+  - key: nvidia.com/gpu
+    operator: Exists
+    effect: NoSchedule
