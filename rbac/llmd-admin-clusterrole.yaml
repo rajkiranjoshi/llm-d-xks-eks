@@ -1,0 +1,14 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: llmd-admin
+  labels:
+    llmd.io/role: admin
+rules:
+  # Full access to all resources. Equivalent to cluster-admin.
+  # Granted selectively via: user-mgmt.sh promote <username>
+  - apiGroups: ["*"]
+    resources: ["*"]
+    verbs: ["*"]
+  - nonResourceURLs: ["*"]
+    verbs: ["*"]
