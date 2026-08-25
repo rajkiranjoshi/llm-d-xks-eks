@@ -5,6 +5,7 @@ Infrastructure manifests for deploying [llm-d](https://github.com/llm-d/llm-d) o
 ## Components
 
 - **[local-storage/](local-storage/)** — Helm chart that pools instance NVMe SSDs into RAID-0 arrays on GPU worker nodes, plus a model download job for pre-caching HuggingFace models.
+- **[pvc-storage/](pvc-storage/)** — Setup script and Helm values for the AWS EBS CSI driver, enabling dynamic EBS-backed PVC provisioning via the `gp2` StorageClass.
 - **[monitoring/](monitoring/)** — Prometheus exporter and Grafana dashboard for EFA/RDMA network observability across GPU nodes.
 - **[rbac/](rbac/)** — ClusterRoles for multi-tenant access (`llmd-user`, `llmd-admin`).
 - **[user-mgmt.sh](user-mgmt.sh)** — Script to create/remove users, manage roles, and generate kubeconfigs.

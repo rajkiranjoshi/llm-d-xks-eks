@@ -1,0 +1,36 @@
+controller:
+  region: us-west-2
+  serviceAccount:
+    create: true
+    name: ebs-csi-controller-sa
+  env:
+    - name: AWS_ACCESS_KEY_ID
+      valueFrom:
+        secretKeyRef:
+          name: aws-secret
+          key: key_id
+    - name: AWS_SECRET_ACCESS_KEY
+      valueFrom:
+        secretKeyRef:
+          name: aws-secret
+          key: access_key
+    - name: AWS_REGION
+      value: us-west-2
+
+node:
+  serviceAccount:
+    create: true
+    name: ebs-csi-node-sa
+  env:
+    - name: AWS_ACCESS_KEY_ID
+      valueFrom:
+        secretKeyRef:
+          name: aws-secret
+          key: key_id
+    - name: AWS_SECRET_ACCESS_KEY
+      valueFrom:
+        secretKeyRef:
+          name: aws-secret
+          key: access_key
+    - name: AWS_REGION
+      value: us-west-2
