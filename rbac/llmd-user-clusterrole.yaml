@@ -80,6 +80,20 @@ rules:
     resources: ["gateways", "httproutes", "referencegrants"]
     verbs: ["*"]
 
+  # Istio networking CRDs (e.g. DestinationRules created by GAIE/EPP)
+  - apiGroups: ["networking.istio.io"]
+    resources:
+      - destinationrules
+      - virtualservices
+      - gateways
+      - serviceentries
+      - sidecars
+      - envoyfilters
+      - proxyconfigs
+      - workloadentries
+      - workloadgroups
+    verbs: ["*"]
+
   # Inference extension CRDs (for llm-d endpoint picker)
   - apiGroups: ["inference.networking.x-k8s.io", "inference.networking.k8s.io"]
     resources: ["inferencemodels", "inferencepools"]
